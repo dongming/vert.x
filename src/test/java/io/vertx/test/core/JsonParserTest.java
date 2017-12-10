@@ -29,7 +29,6 @@ import org.junit.Test;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -43,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
-import static java.time.format.DateTimeFormatter.ISO_INSTANT;
+import static java.time.format.DateTimeFormatter.*;
 import static junit.framework.TestCase.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -147,18 +146,22 @@ public class JsonParserTest {
     JsonParser parser = JsonParser.newParser();
     AtomicInteger status = new AtomicInteger();
     parser.objectValueMode();
+    JsonObject expected = new JsonObject()
+      .put("number", 3)
+      .put("floating", 3.5d)
+      .put("true", true)
+      .put("false", false)
+      .put("string", "s")
+      .put("object", new JsonObject().put("foo", "bar"))
+      .put("array", new JsonArray().add(0).add(1).add(2))
+      .putNull("null")
+      .put("bytes", new byte[]{1, 2, 3});
     parser.handler(event -> {
       assertEquals(0, status.getAndIncrement());
       assertEquals(JsonEventType.VALUE, event.type());
-      assertEquals(new JsonObject().put("number", 3)
-        .put("true", true)
-        .put("false", false)
-        .put("string", "s")
-        .put("object", new JsonObject().put("foo", "bar"))
-        .put("array", new JsonArray().add(0).add(1).add(2))
-        .putNull("null"), event.value());
+      assertEquals(expected, event.value());
     });
-    parser.handle(Buffer.buffer("{\"number\":3,\"true\":true,\"false\":false,\"string\":\"s\",\"null\":null,\"object\":{\"foo\":\"bar\"},\"array\":[0,1,2]}"));
+    parser.handle(expected.toBuffer());
     assertEquals(1, status.get());
   }
 
@@ -167,17 +170,21 @@ public class JsonParserTest {
     JsonParser parser = JsonParser.newParser();
     AtomicInteger status = new AtomicInteger();
     parser.arrayValueMode();
+    JsonArray expected = new JsonArray()
+      .add(3)
+      .add(3.5d)
+      .add(true)
+      .add(false)
+      .add("s")
+      .addNull()
+      .add(new JsonObject().put("foo", "bar"))
+      .add(new JsonArray().add(0).add(1).add(2))
+      .add(new byte[]{1, 2, 3});
     parser.handler(event -> {
-      assertEquals(new JsonArray().add(3)
-        .add(true)
-        .add(false)
-        .add("s")
-        .addNull()
-        .add(new JsonObject().put("foo", "bar"))
-        .add(new JsonArray().add(0).add(1).add(2)), event.value());
+      assertEquals(expected, event.value());
       assertEquals(0, status.getAndIncrement());
     });
-    parser.handle(Buffer.buffer("[3,true,false,\"s\",null,{\"foo\":\"bar\"},[0,1,2]]"));
+    parser.handle(expected.toBuffer());
     assertEquals(1, status.get());
   }
 
@@ -632,5 +639,69 @@ public class JsonParserTest {
       TheObject that = (TheObject) obj;
       return Objects.equals(f, that.f);
     }
+  }
+
+  @Test
+  public void testParseConcatedJSONStream() {
+    JsonParser parser = JsonParser.newParser();
+    AtomicInteger startCount = new AtomicInteger();
+    AtomicInteger endCount = new AtomicInteger();
+
+    parser.handler(event -> {
+      switch (event.type()) {
+        case START_OBJECT:
+          startCount.incrementAndGet();
+          break;
+        case END_OBJECT:
+          endCount.incrementAndGet();
+          break;
+        default:
+          fail();
+          break;
+      }
+    });
+    parser.handle(Buffer.buffer("{}{}"));
+    assertEquals(2, startCount.get());
+    assertEquals(2, endCount.get());
+  }
+
+  @Test
+  public void testParseLineDelimitedJSONStream() {
+    JsonParser parser = JsonParser.newParser();
+    AtomicInteger startCount = new AtomicInteger();
+    AtomicInteger endCount = new AtomicInteger();
+    AtomicInteger numberCount = new AtomicInteger();
+    AtomicInteger nullCount = new AtomicInteger();
+    AtomicInteger stringCount = new AtomicInteger();
+    parser.handler(event -> {
+      switch (event.type()) {
+        case START_OBJECT:
+          startCount.incrementAndGet();
+          break;
+        case END_OBJECT:
+          endCount.incrementAndGet();
+          break;
+        case VALUE:
+          if (event.isNull()) {
+            nullCount.incrementAndGet();
+          } else if (event.isNumber()) {
+            numberCount.incrementAndGet();
+          } else if (event.isString()) {
+            stringCount.incrementAndGet();
+          } else {
+            fail("Unexpected " + event.type());
+          }
+          break;
+        default:
+          fail("Unexpected " + event.type());
+          break;
+      }
+    });
+    parser.handle(Buffer.buffer("{}\r\n1\r\nnull\r\n\"foo\""));
+    assertEquals(1, startCount.get());
+    assertEquals(1, endCount.get());
+    assertEquals(1, numberCount.get());
+    assertEquals(1, nullCount.get());
+    assertEquals(1, stringCount.get());
   }
 }

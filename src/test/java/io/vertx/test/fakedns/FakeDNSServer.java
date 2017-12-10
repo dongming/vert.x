@@ -43,11 +43,7 @@ import org.apache.mina.transport.socket.DatagramSessionConfig;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -72,9 +68,14 @@ public final class FakeDNSServer extends DnsServer {
   private int port = PORT;
   private final RecordStore store;
   private DatagramAcceptor acceptor;
+  private final Deque<DnsMessage> currentMessage = new ArrayDeque<>();
 
   public FakeDNSServer(RecordStore store) {
     this.store = store;
+  }
+
+  public synchronized DnsMessage pollMessage() {
+    return currentMessage.poll();
   }
 
   public InetSocketAddress localAddress() {
@@ -340,6 +341,15 @@ public final class FakeDNSServer extends DnsServer {
         // Use our own codec to support AAAA testing
         session.getFilterChain().addFirst("codec",
           new ProtocolCodecFilter(new TestDnsProtocolUdpCodecFactory()));
+      }
+      @Override
+      public void messageReceived(IoSession session, Object message) {
+        if (message instanceof DnsMessage) {
+          synchronized (FakeDNSServer.this) {
+           currentMessage.add((DnsMessage) message);
+          }
+        }
+        super.messageReceived(session, message);
       }
     });
 

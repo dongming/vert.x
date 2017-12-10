@@ -18,6 +18,8 @@ package io.vertx.core.http.impl;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -380,9 +382,6 @@ public class Http2ServerResponseImpl implements HttpServerResponse {
 
   private void end(ByteBuf chunk) {
     synchronized (conn) {
-      if (chunk != null && !headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
-        headers().set(HttpHeaderNames.CONTENT_LENGTH, String.valueOf(chunk.readableBytes()));
-      }
       write(chunk, true);
     }
   }
@@ -407,18 +406,22 @@ public class Http2ServerResponseImpl implements HttpServerResponse {
   void write(ByteBuf chunk, boolean end) {
     synchronized (conn) {
       checkEnded();
+      boolean hasBody = false;
+      if (chunk != null) {
+        hasBody = true;
+        bytesWritten += chunk.readableBytes();
+      } else {
+        chunk = Unpooled.EMPTY_BUFFER;
+      }
       if (end) {
+        if (!headWritten && !headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
+          headers().set(HttpHeaderNames.CONTENT_LENGTH, String.valueOf(chunk.readableBytes()));
+        }
         handleEnded(false);
       }
-      boolean hasBody = chunk != null;
       boolean sent = checkSendHeaders(end && !hasBody && trailers == null);
       if (hasBody || (!sent && end)) {
-        if (chunk == null) {
-          chunk = Unpooled.EMPTY_BUFFER;
-        }
-        int len = chunk.readableBytes();
         stream.writeData(chunk, end && trailers == null);
-        bytesWritten += len;
       }
       if (end && trailers != null) {
         stream.writeHeaders(trailers, true);
@@ -550,7 +553,8 @@ public class Http2ServerResponseImpl implements HttpServerResponse {
       }
       checkSendHeaders(false);
 
-      FileStreamChannel fileChannel = new FileStreamChannel(ar -> {
+      Future<Long> result = Future.future();
+      result.setHandler(ar -> {
         if (ar.succeeded()) {
           bytesWritten += ar.result();
           end();
@@ -560,10 +564,20 @@ public class Http2ServerResponseImpl implements HttpServerResponse {
             resultHandler.handle(Future.succeededFuture());
           });
         }
-      }, stream, offset, contentLength);
+      });
+
+      FileStreamChannel fileChannel = new FileStreamChannel(result, stream, offset, contentLength);
       drainHandler(fileChannel.drainHandler);
-      ctx.channel().eventLoop().register(fileChannel);
-      fileChannel.pipeline().fireUserEventTriggered(raf);
+      ctx.channel()
+        .eventLoop()
+        .register(fileChannel)
+        .addListener((ChannelFutureListener) future -> {
+        if (future.isSuccess()) {
+          fileChannel.pipeline().fireUserEventTriggered(raf);
+        } else {
+          result.tryFail(future.cause());
+        }
+      });
     }
     return this;
   }
